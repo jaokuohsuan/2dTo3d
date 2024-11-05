@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>3D 模型生成器</title>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        #preview { width: 600px; height: 400px; }
+    </style>
+</head>
+<body>
+    <h1>上傳照片生成3D模型</h1>
+    <input type="file" id="upload" accept="image/*">
+    <button id="uploadButton">上傳</button>
+    <div id="preview"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
+    <script src="{{ url_for('static', filename='js/preview.js') }}"></script>
+</body>
+</html> 

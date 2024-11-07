@@ -9,12 +9,12 @@ import time
 app = Flask(__name__)
 
 # 加載 MiDaS 模型
-model_type = "MiDaS_small"
+model_type = "DPT_Large"  # 使用更高精度的模型
 midas = torch.hub.load("intel-isl/MiDaS", model_type)
 midas.eval()
 
 # 設定轉換
-transform = torch.hub.load("intel-isl/MiDaS", "transforms").small_transform
+transform = torch.hub.load("intel-isl/MiDaS", "transforms").dpt_transform
 
 # 設定靜態文件夾
 OUTPUT_FOLDER = 'static/output'
@@ -64,6 +64,9 @@ def process_image_to_point_cloud(img):
     # 檢查輸入張量的形狀
     if len(input_batch.shape) == 5:
         input_batch = input_batch.squeeze(1)  # 去掉多餘的維度
+
+    if len(input_batch.shape) != 4:
+        raise ValueError(f"Input tensor does not have 4 dimensions as expected, got {input_batch.shape}")
 
     # 生成深度圖
     with torch.no_grad():

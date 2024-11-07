@@ -72,13 +72,15 @@ function loadModel(modelPath) {
 
     const loader = new THREE.PLYLoader();
     loader.load(modelPath, function (geometry) {
-        geometry.computeVertexNormals();
-        const material = new THREE.MeshStandardMaterial({ 
-            color: 0x0055ff,
-            roughness: 0.5,
-            metalness: 0.1,
-        });
-        const mesh = new THREE.Mesh(geometry, material);
+        // geometry.computeVertexNormals();
+        // const material = new THREE.MeshStandardMaterial({ 
+            // color: 0x0055ff,
+            // roughness: 0.5,
+            // metalness: 0.1,
+        // });
+        const material = new THREE.PointsMaterial( { size: 0.01, vertexColors: true } );
+        const object = new THREE.Points( geometry, material );
+        // const mesh = new THREE.Mesh(geometry, material);
         
         // 自動調整模型位置和大小
         geometry.computeBoundingBox();
@@ -87,10 +89,10 @@ function loadModel(modelPath) {
         const size = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z);
         const scale = 2.0 / maxDim;
-        mesh.scale.multiplyScalar(scale);
-        mesh.position.sub(center.multiplyScalar(scale));
+        object.scale.multiplyScalar(scale);
+        object.position.sub(center.multiplyScalar(scale));
 
-        scene.add(mesh);
+        scene.add(object);
         
         // 重置相機位置
         camera.position.set(0, 0, 5);

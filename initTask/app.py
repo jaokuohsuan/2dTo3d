@@ -38,13 +38,13 @@ def upload():
     # 生成深度圖
     depth_map = generate_depth_map(img)
     
-    # 將深度圖和原始圖像轉換為點雲
+    # 將深度圖轉換為點雲
     point_cloud = depth_map_to_point_cloud(depth_map, img)
     
     # 使用時間戳生成唯一文件名
     timestamp = int(time.time())
     point_cloud_file = os.path.join(OUTPUT_FOLDER, f'point_cloud_{timestamp}.ply')
-    save_point_cloud(point_cloud, point_cloud_file)
+    o3d.io.write_point_cloud(point_cloud_file, point_cloud)
     
     return jsonify({"message": "3D模型已生成", "file_path": f"/{point_cloud_file}"})
 
@@ -56,119 +56,108 @@ def generate_depth_map(img):
     # 將 OpenCV 圖像轉換為 RGB
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     
-    # 調整圖像大小以提高處理效率
-    height, width = img_rgb.shape[:2]
-    target_width = 384
-    target_height = int(height * (target_width / width))
-    img_resized = cv2.resize(img_rgb, (target_width, target_height))
-
-    # 應用轉換
-    input_batch = transform(img_resized).unsqueeze(0)
-
-    # 確認是否可用 GPU
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    midas.to(device)
-    input_batch = input_batch.to(device)
-
-    # 檢查輸入張量的形狀
-    if len(input_batch.shape) == 5:
-        input_batch = input_batch.squeeze(1)  # 去掉多餘的維度
-
-    if len(input_batch.shape) != 4:
-        raise ValueError(f"Input tensor does not have 4 dimensions as expected, got {input_batch.shape}")
-
-    # 生成深度圖
-    with torch.no_grad():
-        prediction = midas(input_batch)
-        prediction = torch.nn.functional.interpolate(
-            prediction.unsqueeze(1),
-            size=img_rgb.shape[:2],
-            mode="bicubic",
-            align_corners=False
-        ).squeeze()
-
-    depth_map = prediction.cpu().numpy()
-    
-    # 正規化深度圖到 0-1 範圍
-    depth_min = depth_map.min()
-    depth_max = depth_map.max()
-    depth_map = (depth_map - depth_min) / (depth_max - depth_min)
-    
-    # 應用高斯模糊以減少噪點
-    depth_map = cv2.GaussianBlur(depth_map, (5, 5), 0)
-
-         # 保存深度圖以供查看
-    depth_visualization = (depth_map * 255).astype(np.uint8)
-    timestamp = int(time.time())
-    cv2.imwrite(os.path.join(OUTPUT_FOLDER, f'depth_map_{timestamp}.png'), depth_visualization)
-    
-    return depth_map
+    try:
+        # 應用轉換
+        input_batch = transform(img_rgb)
+        
+        # 確保輸入是 4D 張量 (batch_size, channels, height, width)
+        if len(input_batch.shape) == 3:
+            input_batch = input_batch.unsqueeze(0)
+        
+        # 確認是否可用 GPU
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        midas.to(device)
+        input_batch = input_batch.to(device)
+        
+        # 生成深度圖
+        with torch.no_grad():
+            prediction = midas(input_batch)
+            prediction = torch.nn.functional.interpolate(
+                prediction.unsqueeze(1),
+                size=img_rgb.shape[:2],
+                mode="bicubic",
+                align_corners=False
+            ).squeeze()
+        
+        depth_map = prediction.cpu().numpy()
+        
+        # 正規化深度圖到 0-1 範圍
+        depth_min = depth_map.min()
+        depth_max = depth_map.max()
+        depth_map = (depth_map - depth_min) / (depth_max - depth_min)
+        
+        # 保存深度圖以供查看
+        depth_visualization = (depth_map * 255).astype(np.uint8)
+        timestamp = int(time.time())
+        cv2.imwrite(os.path.join(OUTPUT_FOLDER, f'depth_map_{timestamp}.png'), depth_visualization)
+        
+        return depth_map
+        
+    except Exception as e:
+        print("Error in generate_depth_map:", str(e))
+        raise
 
 def depth_map_to_point_cloud(depth_map, img):
-    h, w = depth_map.shape
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    # 調整深度映射，使用對數映射來壓縮遠處的深度值
+    depth = depth_map.copy()
     
-    # 設置相機參數
-    fx = 500  # 焦距
-    fy = 500
-    cx = w / 2  # 光學中心
-    cy = h / 2
+    # 對數映射，壓縮遠處的深度值
+    depth = np.log(depth + 1) / np.log(2)  # log2(depth + 1)
     
-    # 創建網格點
-    y, x = np.mgrid[0:h, 0:w]
+    # 再次正規化到合適的範圍
+    depth = (depth * 0.5).astype(np.float32)  # 縮小深度範圍
+    depth_image = o3d.geometry.Image(depth)
     
-    # 計算3D點，翻轉 y 軸方向
-    z = depth_map * 1000  # 縮放深度值
-    x = (x - cx) * z / fx
-    y = -(y - cy) * z / fy  # 加上負號來翻轉 y 軸
+    # 設置相機內參
+    width = depth_map.shape[1]
+    height = depth_map.shape[0]
+    fx = width
+    fy = width
+    cx = width / 2
+    cy = height / 2
     
-    # 創建點雲
-    mask = z > 0  # 只保留有效深度的點
-    points = np.stack((x[mask], y[mask], z[mask]), axis=-1)
-    colors = img_rgb[mask] / 255.0
-    
-    # 降採樣以減少點的數量，但保持較高的採樣率
-    sample_rate = 0.8  # 增加採樣率到 80%
-    indices = np.random.choice(
-        points.shape[0], 
-        size=int(points.shape[0] * sample_rate), 
-        replace=False
+    intrinsic = o3d.camera.PinholeCameraIntrinsic(
+        width, height, fx, fy, cx, cy
     )
-    points = points[indices]
-    colors = colors[indices]
     
-    # 根據深度值過濾離群點
-
-    z_mean = np.mean(points[:, 2])
-    z_std = np.std(points[:, 2])
-    z_mask = np.abs(points[:, 2] - z_mean) < 2 * z_std
-    points = points[z_mask]
-    colors = colors[z_mask]
+    # 從深度圖創建點雲
+    pcd = o3d.geometry.PointCloud.create_from_depth_image(
+        depth_image,
+        intrinsic,
+        depth_scale=0.5,    # 調整深度縮放
+        depth_trunc=1.0,    # 調整深度截斷閾值
+        stride=1
+    )
     
-    return points, colors
-
-def save_point_cloud(point_cloud, filename):
-    points, colors = point_cloud
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(points)
-    pcd.colors = o3d.utility.Vector3dVector(colors)
+    # 為點雲添加顏色
+    color = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    color = cv2.resize(color, (width, height))
     
-    # 調整離群點移除的參數
+    # 根據深度圖的有效點為點雲著色
+    colors = []
+    for i in range(height):
+        for j in range(width):
+            if depth[i, j] > 0:
+                colors.append(color[i, j] / 255.0)
+    
+    if len(colors) > 0:
+        pcd.colors = o3d.utility.Vector3dVector(np.array(colors))
+    
+    # 移除離群點
     pcd, _ = pcd.remove_statistical_outlier(
-        nb_neighbors=30,  # 增加鄰居點數
-        std_ratio=2.0
+        nb_neighbors=30,
+        std_ratio=2.0  # 調整標準差比率
     )
     
-    # 可選：進行法向量估計以改善視覺效果
-    pcd.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(
-            radius=0.1, 
-            max_nn=30
-        )
-    )
+    # 修正旋轉矩陣，解決左右鏡像問題
+    R = np.array([
+        [-1, 0, 0],  # 改變 x 軸方向
+        [0, -1, 0],
+        [0, 0, -1]
+    ])
+    pcd.rotate(R, center=(0, 0, 0))
     
-    # 保存點雲
-    o3d.io.write_point_cloud(filename, pcd)
+    return pcd
 
 if __name__ == '__main__':
     app.run(debug=True)

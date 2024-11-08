@@ -1,6 +1,6 @@
 // 初始化 Three.js 預覽
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xf0f0f0);  // 設置背景色為淺灰色
+scene.background = new THREE.Color(0xf0f0f0);
 
 const camera = new THREE.PerspectiveCamera(75, 600 / 400, 0.1, 1000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -19,18 +19,21 @@ scene.add(directionalLight);
 // 設置相機位置
 camera.position.set(0, 0, 5);
 
-// 添加 OrbitControls
+// 添加 OrbitControls，設置適當的限制
 const controls = new THREE.OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true; // 添加阻尼效果
+controls.enableDamping = true;
 controls.dampingFactor = 0.05;
-controls.screenSpacePanning = false;
+controls.screenSpacePanning = true;
+
+// 設置控制範圍
 controls.minDistance = 1;
-controls.maxDistance = 50;
-controls.maxPolarAngle = Math.PI / 2;
+controls.maxDistance = 10;
+controls.maxPolarAngle = Math.PI * 0.75; // 限制垂直旋轉角度
+controls.minPolarAngle = Math.PI * 0.1;
 
 function animate() {
     requestAnimationFrame(animate);
-    controls.update(); // 更新控制器
+    controls.update();
     renderer.render(scene, camera);
 }
 animate();
@@ -50,7 +53,6 @@ document.getElementById('uploadButton').addEventListener('click', function() {
         .then(response => response.json())
         .then(data => {
             console.log('data===', data);
-            // 使用伺服器返回的文件路徑
             loadModel(data.file_path);
         })
         .catch(error => {
@@ -63,24 +65,27 @@ document.getElementById('uploadButton').addEventListener('click', function() {
 
 // 加載和顯示3D模型
 function loadModel(modelPath) {
-    // 清除之前的模型
+    // 清除所有現有的模型
     scene.children.forEach((child) => {
-        if (child instanceof THREE.Mesh) {
+        if (child instanceof THREE.Points || child instanceof THREE.Mesh) {
             scene.remove(child);
+            if (child.geometry) {
+                child.geometry.dispose();
+            }
+            if (child.material) {
+                child.material.dispose();
+            }
         }
     });
 
     const loader = new THREE.PLYLoader();
     loader.load(modelPath, function (geometry) {
-        // geometry.computeVertexNormals();
-        // const material = new THREE.MeshStandardMaterial({ 
-            // color: 0x0055ff,
-            // roughness: 0.5,
-            // metalness: 0.1,
-        // });
-        const material = new THREE.PointsMaterial( { size: 0.01, vertexColors: true } );
-        const object = new THREE.Points( geometry, material );
-        // const mesh = new THREE.Mesh(geometry, material);
+        const material = new THREE.PointsMaterial({ 
+            size: 0.005,  // 減小點的大小
+            vertexColors: true,
+            sizeAttenuation: true  // 啟用大小衰減
+        });
+        const object = new THREE.Points(geometry, material);
         
         // 自動調整模型位置和大小
         geometry.computeBoundingBox();
@@ -97,9 +102,5 @@ function loadModel(modelPath) {
         // 重置相機位置
         camera.position.set(0, 0, 5);
         controls.reset();
-    }, (xhr) => {
-        console.log((xhr.loaded / xhr.total) * 100 + '% loaded')
-    }, function (error) {
-        console.error('An error happened while loading the model:', error);
     });
 } 

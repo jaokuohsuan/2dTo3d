@@ -96,6 +96,11 @@ def generate_depth_map(img):
     
     # 應用高斯模糊以減少噪點
     depth_map = cv2.GaussianBlur(depth_map, (5, 5), 0)
+
+         # 保存深度圖以供查看
+    depth_visualization = (depth_map * 255).astype(np.uint8)
+    timestamp = int(time.time())
+    cv2.imwrite(os.path.join(OUTPUT_FOLDER, f'depth_map_{timestamp}.png'), depth_visualization)
     
     return depth_map
 
@@ -123,7 +128,7 @@ def depth_map_to_point_cloud(depth_map, img):
     colors = img_rgb[mask] / 255.0
     
     # 降採樣以減少點的數量，但保持較高的採樣率
-    sample_rate = 0.6  # 增加採樣率到 30%
+    sample_rate = 0.8  # 增加採樣率到 80%
     indices = np.random.choice(
         points.shape[0], 
         size=int(points.shape[0] * sample_rate), 
@@ -133,6 +138,7 @@ def depth_map_to_point_cloud(depth_map, img):
     colors = colors[indices]
     
     # 根據深度值過濾離群點
+
     z_mean = np.mean(points[:, 2])
     z_std = np.std(points[:, 2])
     z_mask = np.abs(points[:, 2] - z_mean) < 2 * z_std

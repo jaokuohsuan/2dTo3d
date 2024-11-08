@@ -121,8 +121,7 @@ def depth_map_to_point_cloud(depth_map, img):
     # 設置相機內參
     width = depth_map.shape[1]
     height = depth_map.shape[0]
-    fx = width
-    fy = width
+    fx = fy = width / (2 * np.tan(np.radians(60 / 2)))
     cx = width / 2
     cy = height / 2
     

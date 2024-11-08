@@ -1,8 +1,8 @@
 // 初始化 Three.js 預覽
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xf0f0f0);
+scene.background = new THREE.Color(0x333333);
 
-const camera = new THREE.PerspectiveCamera(75, 600 / 400, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(50, 600 / 400, 0.1, 1000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(600, 400);
 renderer.setPixelRatio(window.devicePixelRatio);

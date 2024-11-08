@@ -5,16 +5,38 @@ import torch
 import open3d as o3d
 import os
 import time
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+from PIL import Image
+
+# 設置環境變量以啟用 CPU 回退
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
 app = Flask(__name__)
 
-# 加載 MiDaS 模型
-model_type = "DPT_Large"
-midas = torch.hub.load("intel-isl/MiDaS", model_type)
-midas.eval()
+# 修改模型名稱部分
+model_name = "depth-anything/Depth-Anything-V2-Large-hf"
 
-# 設定轉換
-transform = torch.hub.load("intel-isl/MiDaS", "transforms").dpt_transform
+# 加載模型時添加 token
+auth_token = "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # 替換為您的 token
+
+# 確保使用 PyTorch
+print("PyTorch version:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+
+try:
+    processor = AutoImageProcessor.from_pretrained(model_name, token=auth_token)
+    model = AutoModelForDepthEstimation.from_pretrained(model_name, token=auth_token)
+except Exception as e:
+    print(f"Error loading model: {e}")
+    raise
+
+# 修改設備選擇邏輯
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")  # 直接使用 CPU
+print(f"Using device: {device}")
+model.to(device)
 
 # 設定靜態文件夾
 OUTPUT_FOLDER = 'static/output'
@@ -53,33 +75,23 @@ def download_file(filename):
     return send_from_directory(OUTPUT_FOLDER, filename)
 
 def generate_depth_map(img):
-    # 將 OpenCV 圖像轉換為 RGB
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    
     try:
-        # 應用轉換
-        input_batch = transform(img_rgb)
-        
-        # 確保輸入是 4D 張量 (batch_size, channels, height, width)
-        if len(input_batch.shape) == 3:
-            input_batch = input_batch.unsqueeze(0)
-        
-        # 確認是否可用 GPU
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        midas.to(device)
-        input_batch = input_batch.to(device)
-        
-        # 生成深度圖
+        # 直接處理圖像
+        inputs = processor(images=img, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        # 使用模型進行預測
         with torch.no_grad():
-            prediction = midas(input_batch)
-            prediction = torch.nn.functional.interpolate(
-                prediction.unsqueeze(1),
-                size=img_rgb.shape[:2],
-                mode="bicubic",
-                align_corners=False
-            ).squeeze()
-        
-        depth_map = prediction.cpu().numpy()
+            outputs = model(**inputs)
+            predicted_depth = outputs.predicted_depth
+
+        # 處理深度圖
+        depth_map = torch.nn.functional.interpolate(
+            predicted_depth.unsqueeze(1),
+            size=img.shape[:2],
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze().cpu().numpy()
         
         # 正規化深度圖到 0-1 範圍
         depth_min = depth_map.min()
@@ -98,14 +110,12 @@ def generate_depth_map(img):
         raise
 
 def depth_map_to_point_cloud(depth_map, img):
-    # 調整深度映射，使用對數映射來壓縮遠處的深度值
-    depth = depth_map.copy()
+    # 直接使用深度圖，不需要對數映射
+    depth = (depth_map * 0.3).astype(np.float32)  # 縮小深度範圍
     
-    # 對數映射，壓縮遠處的深度值
-    depth = np.log(depth + 1) / np.log(2)  # log2(depth + 1)
+    # 使用中值濾波器來減少噪點，使用較小的核心大小
+    depth = cv2.medianBlur(depth, 3)
     
-    # 再次正規化到合適的範圍
-    depth = (depth * 0.5).astype(np.float32)  # 縮小深度範圍
     depth_image = o3d.geometry.Image(depth)
     
     # 設置相機內參
@@ -124,29 +134,36 @@ def depth_map_to_point_cloud(depth_map, img):
     pcd = o3d.geometry.PointCloud.create_from_depth_image(
         depth_image,
         intrinsic,
-        depth_scale=0.5,    # 調整深度縮放
-        depth_trunc=1.0,    # 調整深度截斷閾值
-        stride=1
+        depth_scale=500,     # 調整深度縮放
+        depth_trunc=5.0,     # 減小深度截斷閾值
+        stride=1            # 增加步長以減少點數
     )
     
     # 為點雲添加顏色
     color = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     color = cv2.resize(color, (width, height))
     
-    # 根據深度圖的有效點為點雲著色
-    colors = []
-    for i in range(height):
-        for j in range(width):
-            if depth[i, j] > 0:
-                colors.append(color[i, j] / 255.0)
+    # 創建與點雲點數相同的顏色數組
+    points = np.asarray(pcd.points)
+    colors = np.zeros((len(points), 3))
     
-    if len(colors) > 0:
-        pcd.colors = o3d.utility.Vector3dVector(np.array(colors))
+    # 對每個點進行反投影，找到對應的圖像像素
+    for i, point in enumerate(points):
+        # 計算點在圖像中的投影位置
+        x = int((point[0] * fx / point[2]) + cx)
+        y = int((point[1] * fy / point[2]) + cy)
+        
+        # 確保坐標在有效範圍內
+        if 0 <= x < width and 0 <= y < height:
+            colors[i] = color[y, x] / 255.0
     
-    # 移除離群點
+    # 設置點雲顏色
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    
+    # 使用較輕量的統計濾波器移除離群點
     pcd, _ = pcd.remove_statistical_outlier(
-        nb_neighbors=30,
-        std_ratio=2.0  # 調整標準差比率
+        nb_neighbors=20,     # 減少鄰居點數
+        std_ratio=2.0        # 放寬標準差比率
     )
     
     # 修正旋轉矩陣，解決左右鏡像問題
